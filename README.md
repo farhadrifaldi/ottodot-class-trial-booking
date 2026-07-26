@@ -80,24 +80,6 @@ I chose this over a queue/reservation-token system because it needs no extra inf
 
 **API documentation**: `openapi.yaml` at the repo root is hand-maintained (not generated) given the endpoint count for this take-home, served at `/api-docs` via Swagger UI. Validated with `npx @redocly/cli lint`.
 
-## What I deliberately cut
-
-- Email verification, password reset, login rate limiting/lockout, CSRF beyond `sameSite=lax` — standard production auth concerns, orthogonal to the booking-correctness invariants this take-home is evaluated on.
-- A background job to expire stale `pending_payment` bookings and old sessions — noted as a design (§8) but not implemented; nothing depends on it for correctness since pending holds never reserve capacity, only clutters admin views over time.
-- Any `ClassData` admin/CRUD surface — it's modeled as read-only, externally-owned reference data (see Assumptions).
-- Browser/visual UI verification — I don't have a browser automation tool in this environment, so the UI was verified via `npx tsc`, `eslint`, a production `next build`, and a full curl-based cookie-jar walkthrough of every flow (register → login → book → pay → status → roster), not by actually looking at rendered pages. This is a real gap, not a hidden one.
-- Regular enrollment, waitlists, teacher accounts beyond a single `ADMIN` role.
-- Audit trail on cancellation — the `cancellationReason` is stored, but not *which* admin performed the cancellation or when relative to other admin actions. Fine for a single-admin-role take-home; would need a proper actor/audit log in a real multi-admin deployment.
-- Parent-initiated cancellation — only admins can cancel today, per what was asked. A parent-facing "cancel my own booking" flow would need its own (probably looser) rules and isn't built.
-
-## What I'd monitor after release
-
-- Rate of `payment_failed` with `failureReason: capacity_exceeded` — a high rate signals demand outstripping the 4-seat cap and parents routinely losing the race; that's a product signal, not just a bug signal.
-- Booking-creation error rates by code (`already_booked`, `class_full`, `not_a_trial_class`) — spikes could mean a stale frontend seat-count or a client bug, not just legitimate contention.
-- Failed login attempts per account/IP — there's no rate limiting yet, so this is the first thing that would need an alert before it needs a fix.
-- SQLite write latency/lock-wait time on the booking-confirmation transaction — the leading indicator for "we've outgrown single-writer SQLite and need Postgres."
-- Admin cancellation rate and reasons (free-text, so this would need to go through a human or an LLM-assisted categorizer to be useful) — an unusual spike is worth a human look regardless of cause.
-
 ## What I'd do next with more time
 
 - Real browser/E2E coverage (Playwright) — today's verification is API/HTTP-level only.
