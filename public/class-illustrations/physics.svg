@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 120" role="img" aria-label="Physics Fun illustration">
+  <rect width="200" height="120" fill="#ede9fe"/>
+  <circle cx="70" cy="55" r="22" fill="#f87171"/>
+  <line x1="70" y1="77" x2="70" y2="100" stroke="#7c3aed" stroke-width="2"/>
+  <circle cx="140" cy="70" r="16" fill="#60a5fa"/>
+  <path d="M40 100 Q100 20 170 100" stroke="#7c3aed" stroke-width="2" fill="none"/>
+</svg>

@@ -1,0 +1,94 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// SQLite has no native enum support in Prisma; Role is a plain String,
+// constrained to "PARENT" | "ADMIN" at the application layer (see lib/types.ts).
+model User {
+  id           String    @id @default(cuid())
+  email        String    @unique
+  passwordHash String
+  role         String    @default("PARENT")
+  parent       Parent?
+  sessions     Session[]
+  createdAt    DateTime  @default(now())
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  token     String   @unique
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+}
+
+model Parent {
+  id       String    @id @default(cuid())
+  userId   String    @unique
+  user     User      @relation(fields: [userId], references: [id])
+  name     String
+  students Student[]
+}
+
+model Student {
+  id       String    @id @default(cuid())
+  parentId String
+  parent   Parent    @relation(fields: [parentId], references: [id])
+  name     String
+  bookings Booking[]
+}
+
+// Assumed owned elsewhere in a real system; this booking system only reads it (see TECH_DESIGN.md "Assumptions").
+// Named ClassData (not Class) to avoid colliding with the reserved word `class`.
+model ClassData {
+  id              String    @id @default(cuid())
+  subject         String
+  description     String
+  imageUrl        String?
+  startsAt        DateTime
+  durationMinutes Int
+  capacity        Int       @default(20)
+  isTrial         Boolean   @default(false)
+  bookings        Booking[]
+}
+
+// Same SQLite limitation as Role above: status is a plain String, constrained to
+// "pending_payment" | "confirmed" | "payment_failed" | "cancelled" at the app layer.
+model Booking {
+  id            String           @id @default(cuid())
+  studentId     String
+  student       Student          @relation(fields: [studentId], references: [id])
+  classId       String
+  classData     ClassData        @relation(fields: [classId], references: [id])
+  status        String
+  failureReason String?
+  // Free-text reason an admin gives when cancelling a booking (POST /api/bookings/:id/cancel).
+  // Kept separate from failureReason, which is short system-generated codes
+  // (capacity_exceeded, card_declined, ...), not admin-typed prose.
+  cancellationReason String?
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+  payments      PaymentAttempt[]
+
+  @@index([classId, status])
+  @@index([studentId, classId])
+}
+
+model PaymentAttempt {
+  id          String   @id @default(cuid())
+  bookingId   String
+  booking     Booking  @relation(fields: [bookingId], references: [id])
+  outcome     String
+  reason      String?
+  amountCents Int      @default(4900)
+  createdAt   DateTime @default(now())
+}

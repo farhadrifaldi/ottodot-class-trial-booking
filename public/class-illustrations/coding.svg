@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 120" role="img" aria-label="Intro to Coding illustration">
+  <rect width="200" height="120" fill="#e0f2fe"/>
+  <rect x="30" y="25" width="140" height="70" rx="6" fill="#0f172a"/>
+  <rect x="38" y="33" width="124" height="54" rx="3" fill="#1e293b"/>
+  <text x="48" y="55" font-family="monospace" font-size="12" fill="#38bdf8">&lt;/&gt;</text>
+  <text x="48" y="72" font-family="monospace" font-size="10" fill="#a5f3fc">if ok {</text>
+  <circle cx="100" cy="105" r="4" fill="#0f172a"/>
+</svg>

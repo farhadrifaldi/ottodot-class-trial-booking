@@ -1,0 +1,679 @@
+openapi: 3.0.3
+info:
+  title: Ottodot Trial Booking API
+  version: "1.0.0"
+  description: >
+    Backend API for trial-class booking only (no regular enrollment).
+    Authoritative behavior is documented in TECH_DESIGN.md; this spec describes
+    the request/response contracts for every endpoint listed there (§7).
+servers:
+  - url: http://localhost:3000
+    description: Local dev server
+
+security:
+  - sessionCookie: []
+
+tags:
+  - name: auth
+    description: Registration, login, logout
+  - name: classes
+    description: Browsing bookable trial classes
+  - name: students
+    description: The logged-in parent's children
+  - name: bookings
+    description: Creating and paying for trial bookings
+  - name: roster
+    description: Admin/teacher view of confirmed students per class
+
+paths:
+  /api/auth/signup:
+    post:
+      operationId: signup
+      tags: [auth]
+      summary: Register a parent account
+      description: Creates the account only. Does NOT create a session — a separate login call is required afterward (see TECH_DESIGN.md §2).
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SignupRequest"
+      responses:
+        "201":
+          description: Account created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    example: true
+        "409":
+          description: Email already registered
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                emailTaken:
+                  value: { error: email_taken }
+        "422":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/auth/login:
+    post:
+      operationId: login
+      tags: [auth]
+      summary: Log in
+      description: Verifies credentials and creates a session, setting an httpOnly `session_token` cookie.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+      responses:
+        "200":
+          description: Logged in; Set-Cookie session_token issued
+          headers:
+            Set-Cookie:
+              schema:
+                type: string
+                example: session_token=abc123; HttpOnly; SameSite=Lax; Path=/
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    example: true
+                  role:
+                    $ref: "#/components/schemas/Role"
+        "401":
+          description: Invalid email or password (deliberately generic — never reveals which one was wrong)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                invalidCredentials:
+                  value: { error: invalid_credentials }
+
+  /api/auth/logout:
+    post:
+      operationId: logout
+      tags: [auth]
+      summary: Log out
+      description: Deletes the current session row and clears the cookie.
+      responses:
+        "200":
+          description: Logged out
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    example: true
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/classes:
+    get:
+      operationId: listClasses
+      tags: [classes]
+      summary: List classes
+      description: >
+        Returns classes with enough detail (subject, description, imageUrl, startsAt,
+        computed seats-available) for a parent to decide what they're booking without
+        a follow-up request. Pass `trial=true` to list only trial-bookable classes —
+        this app only ever books trial=true classes (TECH_DESIGN.md §5).
+      parameters:
+        - name: trial
+          in: query
+          schema:
+            type: boolean
+            default: true
+          description: Filter to classes flagged isTrial=true
+      responses:
+        "200":
+          description: List of classes
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ClassData"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/classes/{id}:
+    get:
+      operationId: getClass
+      tags: [classes]
+      summary: Get a single class's detail
+      description: >
+        Backs the class detail page a parent sees before picking a child and
+        booking — same fields as a list item (TECH_DESIGN.md's list -> detail
+        -> book flow).
+      parameters:
+        - $ref: "#/components/parameters/ClassId"
+      responses:
+        "200":
+          description: Class detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClassData"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/classes/{id}/roster:
+    get:
+      operationId: getClassRoster
+      tags: [roster]
+      summary: Get the confirmed roster for a class (admin/teacher view)
+      description: Requires role=ADMIN. A PARENT session gets 403.
+      parameters:
+        - $ref: "#/components/parameters/ClassId"
+      responses:
+        "200":
+          description: Confirmed roster
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/RosterEntry"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/students:
+    get:
+      operationId: listMyStudents
+      tags: [students]
+      summary: List the logged-in parent's children
+      description: >
+        No parentId query parameter — the parent is derived entirely from the session,
+        never from client input (TECH_DESIGN.md §2, the IDOR fix). Requires role=PARENT.
+      responses:
+        "200":
+          description: The caller's own children
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Student"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+    post:
+      operationId: addStudent
+      tags: [students]
+      summary: Add a child to the logged-in parent's own account
+      description: >
+        Registration creates zero children — this is the only way a parent
+        gets one to book with. Scoped to the caller's own parentId, same as
+        every other parent-facing endpoint (TECH_DESIGN.md §2).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateStudentRequest"
+      responses:
+        "201":
+          description: Child added
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Student"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          description: Invalid or empty name
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                invalidRequest:
+                  value: { error: invalid_request }
+
+  /api/bookings:
+    get:
+      operationId: listMyBookings
+      tags: [bookings]
+      summary: List all of the logged-in parent's own bookings
+      description: >
+        Every booking (any status) across all of the caller's children —
+        "which classes has my family already booked and paid for". Scoped
+        entirely by session; there is no parentId parameter.
+      responses:
+        "200":
+          description: The caller's bookings
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/MyBookingEntry"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+    post:
+      operationId: createBooking
+      tags: [bookings]
+      summary: Create (or reuse) a trial booking
+      description: >
+        Runs, in order: session/role check, ownership check (studentId belongs to the
+        caller), isTrial eligibility check, duplicate-booking check, and the Step A
+        optimistic capacity pre-check (TECH_DESIGN.md §4-§5). Returns the existing
+        pending_payment booking idempotently if one already exists for this
+        student+class pair.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateBookingRequest"
+      responses:
+        "201":
+          description: Booking created (or existing pending booking returned)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Booking"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Already booked, or class is full
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                alreadyBooked:
+                  value: { error: already_booked }
+                classFull:
+                  value: { error: class_full }
+        "422":
+          description: Class is not currently offered as a trial
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                notATrialClass:
+                  value: { error: not_a_trial_class }
+
+  /api/bookings/{id}:
+    get:
+      operationId: getBooking
+      tags: [bookings]
+      summary: Get booking status
+      description: Drives "show booking status after submission". Caller must own the booking or be ADMIN.
+      parameters:
+        - $ref: "#/components/parameters/BookingId"
+      responses:
+        "200":
+          description: Booking detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Booking"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/bookings/{id}/pay:
+    post:
+      operationId: payForBooking
+      tags: [bookings]
+      summary: Submit the mock payment for a booking
+      description: >
+        Always records a PaymentAttempt. On simulateOutcome=success, runs the
+        authoritative Step B transaction (re-count confirmed bookings, then confirm
+        or lose the race — TECH_DESIGN.md §5) — a successful mock charge does NOT
+        guarantee a confirmed seat.
+      parameters:
+        - $ref: "#/components/parameters/BookingId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PayRequest"
+      responses:
+        "200":
+          description: Payment processed (booking may end confirmed or payment_failed — check the response body, this is not itself an error response)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Booking"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/bookings/{id}/cancel:
+    post:
+      operationId: cancelBooking
+      tags: [bookings]
+      summary: Cancel a booking (admin only), even if already confirmed/paid
+      description: >
+        Allowed from pending_payment or confirmed; rejected with
+        409 not_cancellable from payment_failed or cancelled. Cancelling a
+        confirmed booking frees its seat immediately, since every capacity
+        check in this API counts confirmed bookings live rather than a cached
+        counter (TECH_DESIGN.md §5a).
+      parameters:
+        - $ref: "#/components/parameters/BookingId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CancelBookingRequest"
+      responses:
+        "200":
+          description: Booking cancelled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Booking"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Booking is already payment_failed or cancelled — nothing to cancel
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                notCancellable:
+                  value: { error: not_cancellable }
+
+components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: session_token
+
+  parameters:
+    BookingId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+      example: cku9x1a2b0000v9wg8h2f3k7d
+    ClassId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+      example: cku9x1a2b0001v9wg1a2b3c4d
+
+  responses:
+    Unauthorized:
+      description: No valid session
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          examples:
+            unauthorized:
+              value: { error: unauthorized }
+    Forbidden:
+      description: Authenticated, but not allowed to access this resource
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          examples:
+            forbidden:
+              value: { error: forbidden }
+    NotFound:
+      description: Resource does not exist
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          examples:
+            notFound:
+              value: { error: not_found }
+
+  schemas:
+    Role:
+      type: string
+      enum: [PARENT, ADMIN]
+
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+          enum:
+            - invalid_request
+            - already_booked
+            - class_full
+            - not_a_trial_class
+            - card_declined
+            - capacity_exceeded
+            - not_found
+            - forbidden
+            - unauthorized
+            - email_taken
+            - invalid_credentials
+            - not_cancellable
+
+    SignupRequest:
+      type: object
+      required: [email, password, name]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          minLength: 8
+        name:
+          type: string
+
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+
+    ClassData:
+      type: object
+      description: Externally-owned reference data (TECH_DESIGN.md modeling assumption) — read-only from this API.
+      properties:
+        id:
+          type: string
+        subject:
+          type: string
+        description:
+          type: string
+        imageUrl:
+          type: string
+          nullable: true
+        startsAt:
+          type: string
+          format: date-time
+        durationMinutes:
+          type: integer
+          description: Class length in minutes, shown alongside startsAt so a parent can see the actual time commitment before booking.
+          example: 45
+        isTrial:
+          type: boolean
+        seatsAvailable:
+          type: integer
+          description: TRIAL_SEAT_CAP (4) minus current confirmed bookings. A courtesy estimate, not a reservation — see TECH_DESIGN.md §5.
+          example: 1
+
+    Student:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+
+    CreateStudentRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+
+    BookingStatus:
+      type: string
+      enum: [pending_payment, confirmed, payment_failed, cancelled]
+
+    Booking:
+      type: object
+      properties:
+        id:
+          type: string
+        studentId:
+          type: string
+        classId:
+          type: string
+        status:
+          $ref: "#/components/schemas/BookingStatus"
+        failureReason:
+          type: string
+          nullable: true
+          enum: [capacity_exceeded, card_declined, expired_timeout, duplicate, null]
+        cancellationReason:
+          type: string
+          nullable: true
+          description: Free-text reason an admin gave when cancelling this booking (POST /api/bookings/:id/cancel). Distinct from failureReason, which is system-generated codes.
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    CreateBookingRequest:
+      type: object
+      required: [studentId, classId]
+      properties:
+        studentId:
+          type: string
+        classId:
+          type: string
+
+    PayRequest:
+      type: object
+      required: [simulateOutcome]
+      properties:
+        simulateOutcome:
+          type: string
+          enum: [success, fail]
+
+    RosterEntry:
+      type: object
+      properties:
+        bookingId:
+          type: string
+          description: Target for POST /api/bookings/{bookingId}/cancel.
+        studentName:
+          type: string
+        parentName:
+          type: string
+        parentEmail:
+          type: string
+        confirmedAt:
+          type: string
+          format: date-time
+
+    CancelBookingRequest:
+      type: object
+      required: [reason]
+      properties:
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 500
+          description: Free-text reason shown to the parent on their booking status page.
+
+    MyBookingEntry:
+      type: object
+      properties:
+        id:
+          type: string
+        status:
+          $ref: "#/components/schemas/BookingStatus"
+        failureReason:
+          type: string
+          nullable: true
+        cancellationReason:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        student:
+          type: object
+          properties:
+            id:
+              type: string
+            name:
+              type: string
+        classData:
+          type: object
+          properties:
+            id:
+              type: string
+            subject:
+              type: string
+            startsAt:
+              type: string
+              format: date-time
